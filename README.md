@@ -1,4 +1,4 @@
-# 🦖 Nedry SDDM Login Fail Theme
+# 🦖 Nedry SDDM Login Fail
 
 > *"You didn't say the magic word!"*
 
