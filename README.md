@@ -2,6 +2,8 @@
 
 > *"You didn't say the magic word!"*
 
+![Nedry](nedry.png)
+
 Plays the Jurassic Park Nedry clip — video fullscreen + audio — whenever someone enters a wrong password at the SDDM login screen.
 
 ## Requirements
