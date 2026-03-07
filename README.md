@@ -23,7 +23,6 @@ The installer only lists themes that are compatible. A theme is compatible if it
 
 Confirmed working:
 - `breeze` ✅
-- `01-breeze-fedora` ✅
 - `Noir-SDDM-6` ✅
 - Most other themes derived from the KDE Breeze template ✅
 
