@@ -2,7 +2,7 @@
 # =============================================================================
 #  Nedry SDDM Installer
 #  "You didn't say the magic word!" — Jurassic Park login fail theme
-#  Requires: Fedora/KDE Plasma 6, any standard KDE SDDM theme
+#  Supports: Fedora KDE / any KDE Plasma 6 SDDM theme with onLoginFailed
 # =============================================================================
 
 set -e
@@ -67,14 +67,12 @@ check_dependencies() {
     echo -e "${GREEN}  ✓ Dependencies OK${NC}"
 }
 
-# Returns true if a theme's Main.qml looks like a standard KDE Plasma theme
+# Returns true if a theme's Main.qml is patchable
 is_compatible_theme() {
     local qml="$1"
-    # Must have org.kde.breeze.components — the common base of all KDE SDDM themes
-    grep -q "org.kde.breeze.components" "$qml" || return 1
-    # Must have onLoginFailed somewhere
+    # Must have onLoginFailed — the only hard requirement
     grep -q "onLoginFailed" "$qml" || return 1
-    # Must NOT use the old plasma.core 2.0 (deprecated, incompatible)
+    # Must NOT use the old plasma.core 2.0 (Plasma 5, incompatible with Qt6)
     grep -q "org.kde.plasma.core 2.0" "$qml" && return 1
     return 0
 }
@@ -97,13 +95,13 @@ select_theme() {
     done < <(find "$SDDM_THEMES_DIR" -maxdepth 2 -name "Main.qml" 2>/dev/null | sort)
 
     if [[ ${#skipped[@]} -gt 0 ]]; then
-        echo -e "  ${YELLOW}Skipping incompatible themes:${NC} ${skipped[*]}"
+        echo -e "  ${YELLOW}Skipping incompatible themes (Plasma 5 / no onLoginFailed):${NC} ${skipped[*]}"
         echo ""
     fi
 
     if [[ ${#themes[@]} -eq 0 ]]; then
         echo -e "${RED}[ERROR]${NC} No compatible KDE SDDM themes found."
-        echo "  Install breeze or a standard KDE-based SDDM theme first."
+        echo "  Install breeze or any KDE Plasma 6 SDDM theme first."
         exit 1
     fi
 
@@ -156,30 +154,36 @@ select_audio_device() {
     echo -e "${BOLD}[3/5] Selecting audio output device...${NC}"
     echo ""
 
-    local raw
-    raw=$(sudo -u sddm aplay -l 2>/dev/null | grep "^card" || true)
+    # Use aplay -L for stable CARD= names that don't change on USB reconnect.
+    # On PipeWire systems (Fedora default) there are no plughw:/hw: entries —
+    # use sysdefault:CARD= instead (one clean entry per physical device).
+    local raw_all raw
+    raw_all=$(aplay -L 2>/dev/null || true)
+
+    # Prefer sysdefault: — one entry per card, works on ALSA and PipeWire
+    raw=$(echo "$raw_all" | grep -E '^sysdefault:CARD=' || true)
+    # Fall back to front: if no sysdefault entries
+    [[ -z "$raw" ]] && raw=$(echo "$raw_all" | grep -E '^front:CARD=' || true)
+    # Last resort: classic plughw/hw for non-PipeWire systems
+    [[ -z "$raw" ]] && raw=$(echo "$raw_all" | grep -E '^(plughw|hw):CARD=' || true)
 
     if [[ -z "$raw" ]]; then
-        echo -e "${YELLOW}  [WARN]${NC} Could not list ALSA devices as sddm user. Defaulting to hw:0,0"
+        echo -e "${YELLOW}  [WARN]${NC} Could not list audio devices. Defaulting to sysdefault:CARD=Generic_1"
         echo "  Change later with: sudo ./configure.sh"
-        ALSA_DEVICE="hw:0,0"
+        ALSA_DEVICE="sysdefault:CARD=Generic_1"
         return
     fi
 
     local cards=()
-    local labels=()
     local index=1
 
-    echo "  Available ALSA playback devices:"
+    echo "  Available audio output devices:"
     echo ""
     while IFS= read -r line; do
-        local card_num dev_num dev_label
-        card_num=$(echo "$line" | grep -oP '(?<=card )\d+')
-        dev_num=$(echo "$line"  | grep -oP '(?<=device )\d+')
-        dev_label=$(echo "$line" | grep -oP '(?<=\[)[^\]]+(?=\])' | paste -sd ' / ')
-        cards+=("hw:${card_num},${dev_num}")
-        labels+=("$dev_label")
-        printf "  [%d] hw:%s  →  %s\n" "$index" "${card_num},${dev_num}" "$dev_label"
+        local desc
+        desc=$(echo "$raw_all" | grep -A2 "^${line}$" | grep -v "^${line}$" | grep -v '^\s*$' | head -1 | sed 's/^\s*//')
+        cards+=("$line")
+        printf "  [%d] %-35s  %s\n" "$index" "$line" "$desc"
         ((index++))
     done <<< "$raw"
 
@@ -189,7 +193,8 @@ select_audio_device() {
         read -rp "  Enter number [1-$((index-1))]: " choice
         if [[ "$choice" =~ ^[0-9]+$ ]] && (( choice >= 1 && choice < index )); then
             ALSA_DEVICE="${cards[$((choice-1))]}"
-            echo -e "${GREEN}  ✓ Selected: $ALSA_DEVICE — ${labels[$((choice-1))]}${NC}"
+            echo -e "${GREEN}  ✓ Selected: $ALSA_DEVICE${NC}"
+            echo -e "  ${CYAN}(Stable name — won't break if USB devices are added/removed)${NC}"
             break
         else
             echo "  Please enter a number between 1 and $((index-1))."
@@ -200,7 +205,7 @@ select_audio_device() {
     read -rp "  Play a test sound now? [Y/n]: " test_choice
     if [[ "$test_choice" != "n" && "$test_choice" != "N" ]]; then
         echo "  Playing test audio..."
-        sudo -u sddm aplay -D "$ALSA_DEVICE" "$AUDIO_DEST" 2>/dev/null \
+        aplay -D "$ALSA_DEVICE" "$AUDIO_DEST" 2>/dev/null \
             && echo -e "${GREEN}  ✓ Audio test passed!${NC}" \
             || echo -e "${YELLOW}  [WARN]${NC} aplay returned an error — try a different device with: sudo ./configure.sh"
     fi
@@ -212,10 +217,10 @@ patch_qml() {
     python3 << PYEOF
 import re, sys
 
-qml_file   = "${QML_FILE}"
-audio_dest = "${AUDIO_DEST}"
+qml_file    = "${QML_FILE}"
+audio_dest  = "${AUDIO_DEST}"
 alsa_device = "${ALSA_DEVICE}"
-duration   = "10000"
+duration    = "10000"
 
 with open(qml_file, 'r') as f:
     content = f.read()
@@ -237,7 +242,6 @@ if p5_match:
     plasmacore_alias = p5_match.group(1)
     print(f"  Found plasma5support alias: {plasmacore_alias}")
 else:
-    # Not present — inject it after the last import line
     plasmacore_alias = "PlasmaCore"
     last_import = max(
         (m.end() for m in re.finditer(r'^import .+', content, re.MULTILINE)),
@@ -247,13 +251,23 @@ else:
     content = content[:last_import] + inject + content[last_import:]
     print("  Added: import org.kde.plasma.plasma5support 2.0 as PlasmaCore")
 
-# ── 3. Inject Nedry QML elements into the root Item block ────────────────────
+# ── 3. Inject Nedry QML elements into the root block ─────────────────────────
+# Supports Item, Rectangle, FocusScope, or any other root type
 nedry_elements = f"""
+    // --- Nedry: spam guard — prevents retriggering while clip is playing ---
+    property bool playingFail: false
+
     // --- Nedry fail video ---
     MediaPlayer {{
         id: failVideo
         source: Qt.resolvedUrl("fail_h264.mp4")
         videoOutput: failVideoOutput
+        onPlaybackStateChanged: {{
+            if (playbackState === MediaPlayer.StoppedState) {{
+                failVideoOutput.visible = false
+                root.playingFail = false
+            }}
+        }}
     }}
 
     VideoOutput {{
@@ -275,6 +289,7 @@ nedry_elements = f"""
         audioRunner.connectSource("aplay -D {alsa_device} {audio_dest}")
     }}
 
+    // --- Safety timeout: force-hides video if MediaPlayer stalls ---
     Timer {{
         id: hideVideoTimer
         interval: {duration}
@@ -282,43 +297,67 @@ nedry_elements = f"""
         onTriggered: {{
             failVideoOutput.visible = false
             failVideo.stop()
+            root.playingFail = false
         }}
     }}
 """
 
 if 'id: failVideo' not in content:
-    match = re.search(r'^Item\s*\{', content, re.MULTILINE)
+    # Match any root-level QML element type (Item, Rectangle, FocusScope, etc.)
+    match = re.search(r'^\s*(?:Item|Rectangle|FocusScope|Control|AbstractButton)\s*\{', content, re.MULTILINE)
+    if not match:
+        # Broader fallback: first top-level { that isn't an import or pragma line
+        match = re.search(r'^[A-Z]\w+\s*\{', content, re.MULTILINE)
     if match:
         insert_pos = content.find('\n', match.end())
         content = content[:insert_pos] + '\n' + nedry_elements + content[insert_pos:]
-        print("  Injected Nedry elements into Item block")
+        print(f"  Injected Nedry elements into root block")
     else:
-        print("  ERROR: Could not find root Item { block", file=sys.stderr)
+        print("  ERROR: Could not find root QML block to inject into", file=sys.stderr)
         sys.exit(1)
 else:
     print("  Nedry elements already present, skipping")
 
 # ── 4. Inject trigger calls into onLoginFailed ────────────────────────────────
 trigger_calls = """            // Nedry
-            failVideo.stop()
-            failVideo.position = 0
-            failVideoOutput.visible = true
-            failVideo.play()
-            playFailAudio()
-            hideVideoTimer.restart()"""
+            if (!root.playingFail) {
+                root.playingFail = true
+                failVideo.stop()
+                failVideo.position = 0
+                failVideoOutput.visible = true
+                failVideo.play()
+                playFailAudio()
+                hideVideoTimer.restart()
+            }"""
 
 if 'failVideo.play()' not in content:
-    # Style A: onLoginFailed: {
+    # Style A: onLoginFailed: { ... notificationMessage =
     style_a = re.search(r'(onLoginFailed\s*:\s*\{[^\}]*?)(notificationMessage\s*=)', content, re.DOTALL)
-    # Style B: function onLoginFailed() {
+    # Style B: function onLoginFailed() { ... notificationMessage =
     style_b = re.search(r'(function\s+onLoginFailed\s*\(\s*\)\s*\{[^\}]*?)(notificationMessage\s*=)', content, re.DOTALL)
+    # Style C: onLoginFailed: notificationMessage = (single-line, no braces)
+    style_c = re.search(r'(onLoginFailed\s*:\s*)(notificationMessage\s*=)', content)
 
-    match = style_a or style_b
+    match = style_a or style_b or style_c
     if match:
-        nm_end = content.find('\n', match.start(2))
-        content = content[:nm_end] + '\n' + trigger_calls + content[nm_end:]
-        syntax = "A (signal handler)" if style_a else "B (function)"
-        print(f"  Injected trigger calls into onLoginFailed (syntax {syntax})")
+        if style_c and not style_a and not style_b:
+            # Expand single-line handler into a block first
+            old_handler = match.group(0)
+            rest_of_line_end = content.find('\n', match.start())
+            rest_of_line = content[match.end():rest_of_line_end]
+            new_handler = (
+                "onLoginFailed: {\n"
+                + "            " + match.group(2) + rest_of_line + "\n"
+                + trigger_calls + "\n"
+                + "        }"
+            )
+            content = content[:match.start()] + new_handler + content[rest_of_line_end:]
+            print("  Injected trigger calls into onLoginFailed (style C — expanded single-line)")
+        else:
+            nm_end = content.find('\n', match.start(2))
+            content = content[:nm_end] + '\n' + trigger_calls + content[nm_end:]
+            syntax = "A (signal handler)" if style_a else "B (function)"
+            print(f"  Injected trigger calls into onLoginFailed (style {syntax})")
     else:
         print("  ERROR: Could not find onLoginFailed block", file=sys.stderr)
         sys.exit(1)
@@ -353,11 +392,32 @@ EOF
 
     echo ""
     echo -e "${CYAN}  Running QML syntax check...${NC}"
-    sddm-greeter-qt6 --test-mode --theme "$THEME_DIR" &>/dev/null &
-    sleep 3
-    kill %1 2>/dev/null && echo -e "${GREEN}  ✓ QML loaded without errors${NC}" || \
-        echo -e "${YELLOW}  Could not auto-verify. Test manually:${NC}
-    sddm-greeter-qt6 --test-mode --theme $THEME_DIR"
+    # Clear all known SDDM cache locations before test
+    rm -rf /var/cache/sddm/* 2>/dev/null || true
+    rm -rf /root/.cache/sddm* 2>/dev/null || true
+    rm -rf /var/lib/sddm/.cache 2>/dev/null || true
+
+    # Handle both qt6 and non-suffixed greeter binary names
+    local greeter_bin
+    if command -v sddm-greeter-qt6 &>/dev/null; then
+        greeter_bin="sddm-greeter-qt6"
+    elif command -v sddm-greeter &>/dev/null; then
+        greeter_bin="sddm-greeter"
+    else
+        greeter_bin=""
+    fi
+
+    if [[ -n "$greeter_bin" ]]; then
+        "$greeter_bin" --test-mode --theme "$THEME_DIR" &>/dev/null &
+        sleep 3
+        kill %1 2>/dev/null \
+            && echo -e "${GREEN}  ✓ QML loaded without errors${NC}" \
+            || echo -e "${YELLOW}  Could not auto-verify. Test manually:${NC}
+    $greeter_bin --test-mode --theme $THEME_DIR"
+    else
+        echo -e "${YELLOW}  Skipping QML check (sddm-greeter binary not found).${NC}"
+        echo "  Test manually after logging out."
+    fi
 
     echo ""
     echo -e "${GREEN}${BOLD}  Installation complete! 🦖${NC}"

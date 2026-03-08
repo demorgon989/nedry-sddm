@@ -73,6 +73,7 @@ uninstall_theme() {
     # Clear SDDM QML cache so restored theme takes effect immediately
     rm -rf /var/cache/sddm/* 2>/dev/null || true
     rm -rf /root/.cache/sddm* 2>/dev/null || true
+    rm -rf /var/lib/sddm/.cache 2>/dev/null || true
     echo -e "${GREEN}  ✓ Cleared SDDM cache${NC}"
 
     echo ""
