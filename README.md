@@ -8,11 +8,14 @@ Plays the Jurassic Park Nedry clip — video fullscreen + audio — whenever som
 
 ## Requirements
 
-- Fedora with KDE Plasma 6 (or any distro running Plasma 6 + PipeWire)
-- SDDM login manager (for login screen support)
+- KDE Plasma 6 with SDDM and PipeWire
+- Tested on Fedora 43 KDE. Should work on any distro running Plasma 6 + PipeWire + SDDM — openSUSE Tumbleweed, Arch, Nobara, etc.
+- `alsa-utils` package (provides `aplay`) — for SDDM audio
+  - Fedora: `sudo dnf install alsa-utils`
+  - Arch: `sudo pacman -S alsa-utils`
+  - openSUSE: `sudo zypper install alsa-utils`
+- `pipewire-pulse` (provides `paplay`) — for lock screen audio, installed by default on most KDE spins
 - A compatible KDE SDDM theme (for login screen support — see below)
-- `alsa-utils` package (`sudo dnf install alsa-utils`)
-- `paplay` / `pipewire-pulse` (for lock screen audio — installed by default on Fedora KDE)
 
 ## Compatible SDDM Themes
 
