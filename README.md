@@ -1,19 +1,20 @@
-# 🦖 Nedry SDDM Login Fail
+# 🦖 Nedry Login / Lock Fail
 
 > *"You didn't say the magic word!"*
 
 <img src="nedry.png" width="35%">
 
-Plays the Jurassic Park Nedry clip — video fullscreen + audio — whenever someone enters a wrong password at the SDDM login screen.
+Plays the Jurassic Park Nedry clip — video fullscreen + audio — whenever someone enters a wrong password at the **SDDM login screen** and/or the **KDE lock screen**.
 
 ## Requirements
 
 - Fedora with KDE Plasma 6 (or any distro running Plasma 6 + PipeWire)
-- SDDM login manager
-- A compatible KDE SDDM theme (see below)
+- SDDM login manager (for login screen support)
+- A compatible KDE SDDM theme (for login screen support — see below)
 - `alsa-utils` package (`sudo dnf install alsa-utils`)
+- `paplay` / `pipewire-pulse` (for lock screen audio — installed by default on Fedora KDE)
 
-## Compatible Themes
+## Compatible SDDM Themes
 
 The installer scans all installed SDDM themes and lists only compatible ones. A theme is compatible if it:
 
@@ -40,8 +41,8 @@ Incompatible:
 ```
 nedry-sddm/
 ├── install.sh       ← Run this first
-├── uninstall.sh     ← Restores your theme to its original state
-├── configure.sh     ← Change audio device after install
+├── uninstall.sh     ← Restores everything to its original state
+├── configure.sh     ← Change SDDM audio device after install
 ├── fail_h264.mp4    ← The Nedry video clip (H.264)
 ├── fail.wav         ← Audio extracted from the clip
 └── README.md
@@ -55,16 +56,22 @@ sudo ./install.sh
 ```
 
 The installer will:
-1. List only compatible SDDM themes and let you pick one
-2. Back up the original `Main.qml` as `Main.qml.bak`
-3. Surgically patch the theme's `Main.qml` — preserving all its original structure
-4. Inject `import org.kde.plasma.plasma5support` if the theme doesn't already have it
-5. Copy the video and audio files into the theme directory
-6. List your available audio output devices and let you pick one
-7. Play a test sound to confirm it works
-8. Save a `nedry.conf` config file to the theme directory
+1. Ask whether to install on the **SDDM login screen**, **KDE lock screen**, or **both**
+2. *(SDDM)* List only compatible themes and let you pick one
+3. *(SDDM)* Back up the original `Main.qml` as `Main.qml.bak`
+4. *(SDDM)* Surgically patch the theme's `Main.qml`
+5. List your available audio output devices and let you pick one
+6. Play a test sound to confirm the device works
+7. Patch the relevant QML file(s) and copy media files
+8. Save config file(s) to the patched directory
 
-**To test:** fully log out (don't lock), then enter a wrong password.
+**To test SDDM:** fully log out (don't lock), then enter a wrong password.  
+**To test lock screen:** lock with `Super+L`, then enter a wrong password.
+
+> **Note on the audio test:** The test sound runs via `sudo` which has no PipeWire
+> session, so it may not play even if the device is correct. This is a false negative —
+> audio will work correctly from the actual login/lock screen. Lock your screen and
+> enter a wrong password to confirm.
 
 ## Uninstall
 
@@ -72,7 +79,7 @@ The installer will:
 sudo ./uninstall.sh
 ```
 
-Restores the original `Main.qml` from the backup and removes all Nedry files. If you installed into multiple themes it will ask which one(s) to restore.
+Detects whatever is installed (SDDM, lock screen, or both) and offers a menu. Restores all original QML files from their backups and removes all Nedry files.
 
 ## Changing Audio Device Later
 
@@ -82,38 +89,62 @@ If you swap headsets, plug in new speakers, or add/remove USB audio devices:
 sudo ./configure.sh
 ```
 
-Re-lists your devices by stable name, lets you pick, tests the audio, and updates everything automatically. Device names are stored as `sysdefault:CARD=Name` rather than `hw:0,0` style numbers, so they survive reboots and USB changes without needing reconfiguration.
+Detects what's installed and offers to reconfigure accordingly. The **SDDM** audio device can be changed (it uses `aplay`/ALSA directly). The **lock screen** audio needs no reconfiguration — it uses `paplay` via your PipeWire session and follows your normal system audio automatically.
+
+Device names are stored as `sysdefault:CARD=Name` rather than `hw:0,0` style numbers so they survive reboots and USB changes without needing reconfiguration.
 
 ## How It Works
 
-- Video plays via Qt6 `QtMultimedia` (`MediaPlayer` + `VideoOutput`)
-- Audio plays separately via `PlasmaCore.DataSource` executable engine calling `aplay`
-- This bypasses QtMultimedia's broken audio path in SDDM's restricted pre-login environment
-- Both fire simultaneously on the `onLoginFailed` signal
-- A spam guard (`playingFail` flag) prevents the clip retriggering if the wrong password is entered repeatedly while it's playing
+### SDDM Login Screen
+
+SDDM runs as the `sddm` system user before any login. PipeWire is unavailable at this stage, so:
+
+- Video plays via `QtMultimedia` (`MediaPlayer` + `VideoOutput`, z: 100)
+- Audio plays via `PlasmaCore.DataSource` executable engine calling `aplay` directly to ALSA
+- Both fire on the `onLoginFailed` signal
+- A spam guard (`playingFail` flag) prevents retriggering while the clip is playing
 - A 10-second safety timer force-stops the video if `MediaPlayer` stalls
+
+### KDE Lock Screen
+
+The lock screen patches `LockScreenUi.qml` in the `plasma-desktop` shell — a system file shared across all look-and-feel themes. The `onFailed(kind)` signal fires on authentication failure; `kind == 0` is a password failure, `kind != 0` is fingerprint/smartcard (ignored).
+
+- Video plays via `QtMultimedia` (`MediaPlayer` + `VideoOutput`, z: 200)
+- Audio plays via a helper script (`nedry-play.sh`) that sets `XDG_RUNTIME_DIR` and calls `paplay`
+- `paplay` uses your existing PipeWire session — **audio mixes correctly with browsers and other apps**
+- Same spam guard and safety timer as SDDM
+
+> **Note:** The lock screen QML is owned by the `plasma-workspace` package. A package
+> update will overwrite the patch. Run `sudo ./install.sh` again after
+> `plasma-workspace` updates to restore it.
 
 ## Audio Device Notes
 
-The installer uses `aplay -L` to list devices by stable card name (e.g. `sysdefault:CARD=Generic_1`) rather than numeric index (e.g. `hw:2,0`). This means audio keeps working even if USB devices are added or removed and ALSA renumbers the cards.
-
-On Fedora (PipeWire), your devices will appear as `sysdefault:CARD=<name>`. Common examples:
+### SDDM
+Uses `aplay -L` to list devices by stable card name (e.g. `sysdefault:CARD=Generic_1`) rather than numeric index (e.g. `hw:2,0`). On Fedora (PipeWire), devices appear as:
 - `sysdefault:CARD=Generic_1` — motherboard analog output (3.5mm jack)
 - `sysdefault:CARD=HyperSense` — USB headset
 - `hdmi:CARD=NVidia,DEV=0` — HDMI audio output
 
+### Lock Screen
+No device selection needed. Audio goes through PipeWire and respects your system volume and default output device automatically.
+
 ## Troubleshooting
 
-**No audio:** Run `sudo ./configure.sh` and pick a different device. If the test sound passes in configure but not at login, try `sysdefault:CARD=<yourcard>` instead of an `hdmi:` device — HDMI audio may not be active at the login screen.
+**No audio at SDDM login:** Run `sudo ./configure.sh` and pick a different device. Try `sysdefault:CARD=<yourcard>` over `hdmi:` devices — HDMI audio may not be active at the login screen.
 
-**No video:** Check that `fail_h264.mp4` is in the theme directory (`/usr/share/sddm/themes/<theme>/`) and is valid H.264. Run the QML test below to see errors.
+**No audio at lock screen with browser open:** This should work — the lock screen uses PipeWire which mixes audio. If it doesn't, check that `paplay` is installed (`command -v paplay`) and that `pipewire-pulse` is running (`systemctl --user status pipewire-pulse`).
 
-**QML errors / black screen on logout:** Clear the SDDM cache manually and test:
+**No video (either screen):** Check that `fail_h264.mp4` is in the correct directory and is valid H.264.
+
+**QML errors / black screen on logout (SDDM):** Clear the SDDM cache and test:
 ```bash
 sudo rm -rf /var/cache/sddm/* /root/.cache/sddm* /var/lib/sddm/.cache
 sddm-greeter-qt6 --test-mode --theme /usr/share/sddm/themes/<yourtheme>
 ```
 
-**Theme not listed by installer:** The theme either uses `org.kde.plasma.core 2.0` (Plasma 5, not supported) or has no `onLoginFailed` handler. Check the theme's `Main.qml` manually.
+**Lock screen stopped working after system update:** `plasma-workspace` was updated and overwrote `LockScreenUi.qml`. Run `sudo ./install.sh` and choose lock screen to repatch.
 
-**Broke my theme:** Run `sudo ./uninstall.sh` to restore the original, then reinstall.
+**Theme not listed by SDDM installer:** The theme uses `org.kde.plasma.core 2.0` (Plasma 5, not supported) or has no `onLoginFailed` handler.
+
+**Broke something:** Run `sudo ./uninstall.sh` to restore all originals, then reinstall.
