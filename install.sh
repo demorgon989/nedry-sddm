@@ -214,12 +214,16 @@ select_audio_device() {
 patch_qml() {
     echo -e "${BOLD}[4/5] Patching Main.qml...${NC}"
 
-    python3 << PYEOF
-import re, sys
+    # Pass paths as env vars — prevents broken strings if path contains spaces
+    NEDRY_QML="$QML_FILE" \
+    NEDRY_AUDIO="$AUDIO_DEST" \
+    NEDRY_DEVICE="$ALSA_DEVICE" \
+    python3 << 'PYEOF'
+import re, sys, os
 
-qml_file    = "${QML_FILE}"
-audio_dest  = "${AUDIO_DEST}"
-alsa_device = "${ALSA_DEVICE}"
+qml_file    = os.environ["NEDRY_QML"]
+audio_dest  = os.environ["NEDRY_AUDIO"]
+alsa_device = os.environ["NEDRY_DEVICE"]
 duration    = "10000"
 
 with open(qml_file, 'r') as f:
@@ -331,33 +335,32 @@ trigger_calls = """            // Nedry
             }"""
 
 if 'failVideo.play()' not in content:
-    # Style A: onLoginFailed: { ... notificationMessage =
+    # Check styles explicitly in priority order — A and B before C
+    # so a braced handler is never misidentified as single-line
     style_a = re.search(r'(onLoginFailed\s*:\s*\{[^\}]*?)(notificationMessage\s*=)', content, re.DOTALL)
-    # Style B: function onLoginFailed() { ... notificationMessage =
     style_b = re.search(r'(function\s+onLoginFailed\s*\(\s*\)\s*\{[^\}]*?)(notificationMessage\s*=)', content, re.DOTALL)
-    # Style C: onLoginFailed: notificationMessage = (single-line, no braces)
     style_c = re.search(r'(onLoginFailed\s*:\s*)(notificationMessage\s*=)', content)
 
-    match = style_a or style_b or style_c
-    if match:
-        if style_c and not style_a and not style_b:
-            # Expand single-line handler into a block first
-            old_handler = match.group(0)
-            rest_of_line_end = content.find('\n', match.start())
-            rest_of_line = content[match.end():rest_of_line_end]
-            new_handler = (
-                "onLoginFailed: {\n"
-                + "            " + match.group(2) + rest_of_line + "\n"
-                + trigger_calls + "\n"
-                + "        }"
-            )
-            content = content[:match.start()] + new_handler + content[rest_of_line_end:]
-            print("  Injected trigger calls into onLoginFailed (style C — expanded single-line)")
-        else:
-            nm_end = content.find('\n', match.start(2))
-            content = content[:nm_end] + '\n' + trigger_calls + content[nm_end:]
-            syntax = "A (signal handler)" if style_a else "B (function)"
-            print(f"  Injected trigger calls into onLoginFailed (style {syntax})")
+    if style_a:
+        nm_end = content.find('\n', style_a.start(2))
+        content = content[:nm_end] + '\n' + trigger_calls + content[nm_end:]
+        print("  Injected trigger calls into onLoginFailed (style A — signal handler)")
+    elif style_b:
+        nm_end = content.find('\n', style_b.start(2))
+        content = content[:nm_end] + '\n' + trigger_calls + content[nm_end:]
+        print("  Injected trigger calls into onLoginFailed (style B — function)")
+    elif style_c:
+        # Expand single-line handler into a block before injecting
+        rest_of_line_end = content.find('\n', style_c.start())
+        rest_of_line = content[style_c.end():rest_of_line_end]
+        new_handler = (
+            "onLoginFailed: {\n"
+            + "            " + style_c.group(2) + rest_of_line + "\n"
+            + trigger_calls + "\n"
+            + "        }"
+        )
+        content = content[:style_c.start()] + new_handler + content[rest_of_line_end:]
+        print("  Injected trigger calls into onLoginFailed (style C — expanded single-line)")
     else:
         print("  ERROR: Could not find onLoginFailed block", file=sys.stderr)
         sys.exit(1)

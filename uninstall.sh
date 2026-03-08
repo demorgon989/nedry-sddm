@@ -32,7 +32,6 @@ check_root() {
 }
 
 find_installed_themes() {
-    # Find any SDDM theme that has a nedry.conf — that's where we installed
     local found=()
     while IFS= read -r conf; do
         found+=("$(dirname "$conf")")
@@ -52,7 +51,6 @@ uninstall_theme() {
 
     echo -e "${BOLD}Uninstalling from: $theme_name${NC}"
 
-    # Restore original QML
     if [[ -f "$bak" ]]; then
         cp "$bak" "$qml"
         rm "$bak"
@@ -62,7 +60,6 @@ uninstall_theme() {
         echo "         You may need to reinstall the theme manually."
     fi
 
-    # Remove Nedry media files
     for f in "$video" "$audio" "$conf"; do
         if [[ -f "$f" ]]; then
             rm "$f"
@@ -70,7 +67,6 @@ uninstall_theme() {
         fi
     done
 
-    # Clear SDDM QML cache so restored theme takes effect immediately
     rm -rf /var/cache/sddm/* 2>/dev/null || true
     rm -rf /root/.cache/sddm* 2>/dev/null || true
     rm -rf /var/lib/sddm/.cache 2>/dev/null || true
@@ -79,11 +75,52 @@ uninstall_theme() {
     echo ""
 }
 
+# Fix for the multi-theme selection — wrapped in a function so 'local' is valid
+select_and_uninstall() {
+    local installed=("$@")
+
+    if [[ ${#installed[@]} -eq 1 ]]; then
+        echo -e "  Found Nedry installed in: ${BOLD}$(basename "${installed[0]}")${NC}"
+        echo ""
+        local confirm
+        read -rp "  Uninstall? [Y/n]: " confirm
+        if [[ "$confirm" == "n" || "$confirm" == "N" ]]; then
+            echo "  Aborted."
+            exit 0
+        fi
+        uninstall_theme "${installed[0]}"
+    else
+        echo "  Found Nedry installed in multiple themes:"
+        echo ""
+        for i in "${!installed[@]}"; do
+            printf "  [%d] %s\n" "$((i+1))" "$(basename "${installed[$i]}")"
+        done
+        printf "  [%d] All of the above\n" "$((${#installed[@]}+1))"
+        echo ""
+        local choice
+        while true; do
+            read -rp "  Which to uninstall? [1-$((${#installed[@]}+1))]: " choice
+            if [[ "$choice" =~ ^[0-9]+$ ]] && (( choice >= 1 && choice <= ${#installed[@]}+1 )); then
+                break
+            else
+                echo "  Please enter a valid number."
+            fi
+        done
+
+        if (( choice == ${#installed[@]}+1 )); then
+            for dir in "${installed[@]}"; do
+                uninstall_theme "$dir"
+            done
+        else
+            uninstall_theme "${installed[$((choice-1))]}"
+        fi
+    fi
+}
+
 # ── Main ──────────────────────────────────────────────────────────────────────
 print_banner
 check_root
 
-# Find all themes with Nedry installed
 read -ra installed <<< "$(find_installed_themes)"
 
 if [[ ${#installed[@]} -eq 0 ]]; then
@@ -92,41 +129,7 @@ if [[ ${#installed[@]} -eq 0 ]]; then
     exit 0
 fi
 
-if [[ ${#installed[@]} -eq 1 ]]; then
-    echo -e "  Found Nedry installed in: ${BOLD}$(basename "${installed[0]}")${NC}"
-    echo ""
-    read -rp "  Uninstall? [Y/n]: " confirm
-    if [[ "$confirm" == "n" || "$confirm" == "N" ]]; then
-        echo "  Aborted."
-        exit 0
-    fi
-    uninstall_theme "${installed[0]}"
-else
-    echo "  Found Nedry installed in multiple themes:"
-    echo ""
-    for i in "${!installed[@]}"; do
-        printf "  [%d] %s\n" "$((i+1))" "$(basename "${installed[$i]}")"
-    done
-    printf "  [%d] All of the above\n" "$((${#installed[@]}+1))"
-    echo ""
-    local choice
-    while true; do
-        read -rp "  Which to uninstall? [1-$((${#installed[@]}+1))]: " choice
-        if [[ "$choice" =~ ^[0-9]+$ ]] && (( choice >= 1 && choice <= ${#installed[@]}+1 )); then
-            break
-        else
-            echo "  Please enter a valid number."
-        fi
-    done
-
-    if (( choice == ${#installed[@]}+1 )); then
-        for dir in "${installed[@]}"; do
-            uninstall_theme "$dir"
-        done
-    else
-        uninstall_theme "${installed[$((choice-1))]}"
-    fi
-fi
+select_and_uninstall "${installed[@]}"
 
 echo -e "${GREEN}${BOLD}  Uninstall complete!${NC}"
 echo "  Your original SDDM theme has been restored."
